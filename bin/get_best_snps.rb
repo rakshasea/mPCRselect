@@ -55,7 +55,30 @@ for infile in ARGV[1..-1]
 		end
 	end
 end
-@snps_sort = @snps.sort { |a,b| b[1] <=> a[1] }
+# Build per-chromosome position index for cluster scoring
+WINDOW = 400
+chrom_positions = {}
+@snps.each_key do |site|
+	chr, pos = site.split("\t")
+	chrom_positions[chr] ||= []
+	chrom_positions[chr] << pos.to_i
+end
+chrom_positions.each_value { |arr| arr.sort! }
+
+# Compute cluster score: number of other candidate SNPs within WINDOW bp on the same chromosome
+cluster_score = {}
+@snps.each_key do |site|
+	chr, pos = site.split("\t")
+	pos = pos.to_i
+	arr = chrom_positions[chr]
+	cluster_score[site] = arr.count { |p| p != pos && (p - pos).abs <= WINDOW }
+end
+
+# Sort by cluster score (desc), then by population-occurrence count (desc)
+@snps_sort = @snps.sort do |a, b|
+	cs_cmp = cluster_score[b[0]] <=> cluster_score[a[0]]
+	cs_cmp != 0 ? cs_cmp : b[1] <=> a[1]
+end
 @maxSNPs = @snps_sort.size if @snps_sort.size < @maxSNPs
 # Get most observed sites
 for i in 0 ... @maxSNPs

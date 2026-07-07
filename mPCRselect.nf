@@ -162,9 +162,7 @@ process filterMappability {
 	path "${cull_vcf.simpleName}.map.log"
 	
 	"""
-	bedtools sort -i $cull_vcf -header > cull_sort.vcf
-	bedtools sort -i $map_bed -header > map_sort.bed
-	bedtools intersect -a cull_sort.vcf -b map_sort.bed -v -header -sorted | gzip > ${cull_vcf.simpleName}.map.vcf.gz
+	vcftools --gzvcf $cull_vcf --bed $map_bed --recode --recode-INFO-all -c | bgzip > ${cull_vcf.simpleName}.map.vcf.gz
 	vcftools --gzvcf ${cull_vcf.simpleName}.map.vcf.gz --out ${cull_vcf.simpleName}.map
 	cp .command.log ${cull_vcf.simpleName}.map.log
 	"""
@@ -262,13 +260,14 @@ process plinkLD {
 	script:
 	if (params.plinkLD_indep_pairwise == "NULL")
 		"""
-		ln -s $thin_vcf ${thin_vcf.simpleName}.pruned.vcf.gz
-		vcftools --gzvcf $thin_vcf
+		zcat $thin_vcf | awk 'BEGIN{OFS="\\t"} /^#/{print; next} {\$3=\$1":"\$2; print}' | bgzip > ${thin_vcf.simpleName}.pruned.vcf.gz
+		vcftools --gzvcf ${thin_vcf.simpleName}.pruned.vcf.gz
 		cp .command.log ${thin_vcf.simpleName}.pruned.log
 		"""
 	else
 	"""
 	plink2 --vcf $thin_vcf --maf ${params.minMAF} -indep-pairwise ${params.plinkLD_indep_pairwise} --bad-ld --allow-extra-chr --chr-set ${params.haploidN} --set-all-var-ids '@:#' --make-bed --out tmp
+	if [ ! -f tmp.prune.in ]; then cut -f2 tmp.bim > tmp.prune.in; fi
 	plink2 --bfile tmp --extract tmp.prune.in --make-bed --allow-extra-chr --chr-set ${params.haploidN} --export vcf-4.2 --out ${thin_vcf.simpleName}.pruned
 	gzip ${thin_vcf.simpleName}.pruned.vcf
 	cp .command.log ${thin_vcf.simpleName}.pruned.log
@@ -316,7 +315,7 @@ process optimizePi {
 	output:
 	path "${pop_vcf.simpleName}.pi.vcf.gz", emit: vcf
 	path "${pop_vcf.simpleName}.pi.log"
-	
+
 	"""
 	vcftools --gzvcf $pop_vcf --site-pi --out ${pop_vcf.simpleName}
 	get_pi_sites.rb ${pop_vcf.simpleName}.sites.pi ${params.minPi} ${params.maxPiSNPs} ${params.maxPiPC} > pi_sites.txt
@@ -402,18 +401,18 @@ process piFinalSNPs {
 
 	// Merge datasets and find most observed Pi SNP selections
 	// Calculate RMP probabilities
-	
+
 	publishDir "$params.outdir/16_PiFinalSNPs", mode: 'copy'
-	
+
 	input:
 	path(sel_snps)
 	path(thin_vcf)
-	
+
 	output:
 	path "${thin_vcf.simpleName}.finPi.vcf.gz", emit: vcf
 	path "${thin_vcf.simpleName}.finPi.log"
 	path "${thin_vcf.simpleName}.finPi.RMP.txt"
-	
+
 	script:
 	filelist = sel_snps.join("\t")
 	"""
@@ -427,7 +426,7 @@ process piFinalSNPs {
 	cat ${thin_vcf.simpleName}.finPi.frq >> ${thin_vcf.simpleName}.finPi.RMP.txt
 	cp .command.log ${thin_vcf.simpleName}.finPi.log
 	"""
-	
+
 }
 
 process concatFinalSNPs {
@@ -483,11 +482,16 @@ process makePrimers {
 	
 	output:
 	path "${fin_snps.simpleName}.npp.txt"
-	
-	
+	path "${fin_snps.simpleName}.npp_all_draft_primers*.xls"
+	path "${fin_snps.simpleName}.npp_*_primers_combination_*.fa"
+	path "${fin_snps.simpleName}.npp_*_primers_combination_*.xls"
+	path "${fin_snps.simpleName}.npp_*.log"
+
+
 	"""
-	vcf_2_ngsprimerplex.rb $fin_snps > ${fin_snps.simpleName}.npp.txt
-	NGS_primerplex.py -regions ${fin_snps.simpleName}.npp.txt -ref $refseq -ad1 ${params.primerSeq1} -ad2 ${params.primerSeq2} -run ${fin_snps.simpleName} ${params.NPP_params}
+	vcf_2_ngsprimerplex.rb $fin_snps > ${fin_snps.simpleName}.npp.raw.txt
+	${params.chromMap ? "awk -F',' 'NR>1{gsub(/\\r/,\"\",\$5); print \$2\"\\t\"\$5}' ${params.chromMap} > chrom_map.txt && awk 'BEGIN{FS=OFS=\"\\t\"} NR==FNR{map[\$1]=\$2;next} {\$1=((\$1 in map)?map[\$1]:\$1);print}' chrom_map.txt ${fin_snps.simpleName}.npp.raw.txt > ${fin_snps.simpleName}.npp.txt" : "cp ${fin_snps.simpleName}.npp.raw.txt ${fin_snps.simpleName}.npp.txt"}
+	NGS_primerplex.py -regions ${fin_snps.simpleName}.npp.txt -ref $refseq ${params.primerSeq1 ? "-ad1 ${params.primerSeq1}" : ''} ${params.primerSeq2 ? "-ad2 ${params.primerSeq2}" : ''} -run ${fin_snps.simpleName} ${params.NPP_params}
 	"""
 
 }
@@ -518,11 +522,11 @@ process plinkPCA {
 	publishDir "$params.outdir/20_PCAs", mode: 'copy'
 	
 	input:
-	path(original_vcf)
-	path(filtered_vcf)
-	path(fst_vcf)
-	path(pi_vcf)
-	path(fst_pi_vcf)
+	path(original_vcf, stageAs: 'original.vcf.gz')
+	path(filtered_vcf, stageAs: 'filtered.vcf.gz')
+	path(fst_vcf, stageAs: 'fst_snps.vcf.gz')
+	path(pi_vcf, stageAs: 'pi_snps.vcf.gz')
+	path(fst_pi_vcf, stageAs: 'fst_pi_snps.vcf.gz')
 	
 	output:
 	path '*eigenv*'
@@ -568,21 +572,35 @@ workflow {
 		plinkLD(thinSNPs.out.vcf)
 		splitPopulations(plinkLD.out.vcf, Channel.fromPath(params.populations).splitCsv(header:true).map { row -> tuple(row.Sample, row.Population) }.groupTuple(by: 1))
 		optimizePi(splitPopulations.out.vcf)
-		fstSNPs(plinkLD.out.vcf, params.populations)
-		fst_ch = splitPopulations.out.raw.combine(splitPopulations.out.raw).filter { it[0] != it[1]}.map { it -> it.sort() }.unique().combine(Channel.of(1..params.Fst_plot_repet))
-		makeFstPlots(fst_ch)
-		fst_selected_snps_ch = makeFstPlots.out.fst_csv.mix(fstSNPs.out.vcf).collect() // Concatenate the Fst SNP datasets for uniquing
-		fstFinalSNPs(fst_selected_snps_ch, plinkLD.out.vcf)
 		piFinalSNPs(optimizePi.out.vcf.collect(), plinkLD.out.vcf)
-		concatFinalSNPs(fstFinalSNPs.out.vcf, piFinalSNPs.out.vcf)
-		if (params.makePrimers == 1) {
-			indexRef(params.refseq)
-			makePrimers(concatFinalSNPs.out.vcf, params.refseq, indexRef.out) 
-		}
-		if (params.makeBaits == 1) { makeBaits(concatFinalSNPs.out.vcf, params.refseq) }
-		if (params.samples == 'NULL') {
-			plinkPCA(params.vcf, thinSNPs.out.vcf, fstFinalSNPs.out.vcf, piFinalSNPs.out.vcf, concatFinalSNPs.out.vcf)
+		if (params.skipFst) {
+			// Single-population mode: skip all FST steps and use Pi SNPs as final output
+			if (params.makePrimers == 1) {
+				indexRef(params.refseq)
+				makePrimers(piFinalSNPs.out.vcf, params.refseq, indexRef.out)
+			}
+			if (params.makeBaits == 1) { makeBaits(piFinalSNPs.out.vcf, params.refseq) }
+			if (params.samples == 'NULL') {
+				plinkPCA(params.vcf, thinSNPs.out.vcf, piFinalSNPs.out.vcf, piFinalSNPs.out.vcf, piFinalSNPs.out.vcf)
+			} else {
+				plinkPCA(removeSamples.out.vcf, thinSNPs.out.vcf, piFinalSNPs.out.vcf, piFinalSNPs.out.vcf, piFinalSNPs.out.vcf)
+			}
 		} else {
-			plinkPCA(removeSamples.out.vcf, thinSNPs.out.vcf, fstFinalSNPs.out.vcf, piFinalSNPs.out.vcf, concatFinalSNPs.out.vcf)
+			fstSNPs(plinkLD.out.vcf, params.populations)
+			fst_ch = splitPopulations.out.raw.combine(splitPopulations.out.raw).filter { it[0] != it[1]}.map { it -> it.sort() }.unique().combine(Channel.of(1..params.Fst_plot_repet))
+			makeFstPlots(fst_ch)
+			fst_selected_snps_ch = makeFstPlots.out.fst_csv.mix(fstSNPs.out.vcf).collect() // Concatenate the Fst SNP datasets for uniquing
+			fstFinalSNPs(fst_selected_snps_ch, plinkLD.out.vcf)
+			concatFinalSNPs(fstFinalSNPs.out.vcf, piFinalSNPs.out.vcf)
+			if (params.makePrimers == 1) {
+				indexRef(params.refseq)
+				makePrimers(concatFinalSNPs.out.vcf, params.refseq, indexRef.out)
+			}
+			if (params.makeBaits == 1) { makeBaits(concatFinalSNPs.out.vcf, params.refseq) }
+			if (params.samples == 'NULL') {
+				plinkPCA(params.vcf, thinSNPs.out.vcf, fstFinalSNPs.out.vcf, piFinalSNPs.out.vcf, concatFinalSNPs.out.vcf)
+			} else {
+				plinkPCA(removeSamples.out.vcf, thinSNPs.out.vcf, fstFinalSNPs.out.vcf, piFinalSNPs.out.vcf, concatFinalSNPs.out.vcf)
+			}
 		}
 }
